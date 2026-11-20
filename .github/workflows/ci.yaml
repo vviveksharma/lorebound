@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      - name: Build
+        run: go build ./...
+
+  migrations:
+    name: Migrations up, down, up
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lorebound_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lorebound_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply, roll back, re-apply
+        run: |
+          DB="postgres://postgres:postgres@localhost:5432/lorebound_db?sslmode=disable"
+          m() {
+            docker run --rm --network host \
+              -v "$PWD/db/migrations:/migrations:ro" \
+              migrate/migrate -path=/migrations -database "$DB" "$@"
+          }
+          m up
+          m down -all
+          m up
+
+  docker:
+    name: Docker build and compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app image
+        run: docker build -f dockerfile -t lorebound:ci .
+
+      - name: Validate compose file
+        run: |
+          {
+            echo 'DB_USER=postgres'
+            echo 'DB_PASSWORD=postgres'
+            echo 'DB_PORT=5432'
+            echo 'DB_NAME=lorebound_db'
+            echo 'DB_HOST=127.0.0.1'
+            echo 'KAFKA_BROKERS=127.0.0.1:9094'
+            echo 'KAFKA_INGEST_TOPIC=lorebound.ingest'
+            echo 'KAFKA_CONSUMER_GROUP=lorebound-workers'
+            echo 'KAFKA_PORT=9094'
+            echo 'KAFKA_ADVERTISED_HOST=127.0.0.1'
+            echo 'APP_PORT=8080'
+            echo 'CORS_ALLOW_ORIGINS=*'
+            echo 'LOG_LEVEL=info'
+          } > .env
+          docker compose config -q

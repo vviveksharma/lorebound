@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS ingest_jobs;
+DROP TABLE IF EXISTS chunks;
+DROP TABLE IF EXISTS documents;
+DROP TABLE IF EXISTS tenants;
